@@ -1,26 +1,46 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """Invoke tasks."""
-import os
 import json
+import os
 import shutil
-import webbrowser
+from typing import Iterator
 
 from invoke import task
 
 HERE = os.path.abspath(os.path.dirname(__file__))
-with open(os.path.join(HERE, 'cookiecutter.json'), 'r') as fp:
+with open(os.path.join(HERE, "cookiecutter.json"), "r") as fp:
     COOKIECUTTER_SETTINGS = json.load(fp)
 # Match default value of app_name from cookiecutter.json
-COOKIE = os.path.join(HERE, COOKIECUTTER_SETTINGS['app_name'])
-AUTOAPP = os.path.join(COOKIE, 'autoapp.py')
-REQUIREMENTS = os.path.join(COOKIE, 'requirements', 'dev.txt')
+DEFAULT_APP_NAME = "my_flask_app"
+COOKIECUTTER_SETTINGS["app_name"] = DEFAULT_APP_NAME
+COOKIE = os.path.join(HERE, COOKIECUTTER_SETTINGS["app_name"])
+REQUIREMENTS = os.path.join(COOKIE, "requirements", "dev.txt")
+
+
+def _run_npm_command(ctx, command):
+    os.chdir(COOKIE)
+    ctx.run(f"npm {command}", echo=True)
+    os.chdir(HERE)
+
+
+def _run_flask_command(ctx, command, *args):
+    os.chdir(COOKIE)
+    flask_command = f"flask {command}"
+    if args:
+        flask_command += f" {' '.join(args)}"
+    ctx.run(flask_command, echo=True)
 
 
 @task
 def build(ctx):
     """Build the cookiecutter."""
-    ctx.run('cookiecutter {0} --no-input'.format(HERE))
+    ctx.run(f"cookiecutter {HERE} --no-input")
+
+
+@task(pre=[build])
+def build_install(ctx):
+    """Build the cookiecutter."""
+    _run_npm_command(ctx, "install")
+    ctx.run(f"pip install -r {REQUIREMENTS} --ignore-installed", echo=True)
 
 
 @task
@@ -28,27 +48,51 @@ def clean(ctx):
     """Clean out generated cookiecutter."""
     if os.path.exists(COOKIE):
         shutil.rmtree(COOKIE)
-        print('Removed {0}'.format(COOKIE))
-    else:
-        print('App directory does not exist. Skipping.')
 
 
-def _run_flask_command(ctx, command):
-    ctx.run('FLASK_APP={0} flask {1}'.format(AUTOAPP, command), echo=True)
+@task(pre=[clean, build_install])
+def lint(ctx):
+    """Run lint commands."""
+    _run_npm_command(ctx, "run lint")
+    os.chdir(COOKIE)
+    os.environ["FLASK_ENV"] = "production"
+    os.environ["FLASK_DEBUG"] = "0"
+    _run_flask_command(ctx, "lint", "--check")
+
+
+@task(pre=[clean, build_install])
+def test(ctx):
+    """Run tests."""
+    os.chdir(COOKIE)
+    os.environ["FLASK_ENV"] = "production"
+    os.environ["FLASK_DEBUG"] = "0"
+    _run_flask_command(ctx, "test")
+
+
+def _walk_template_files() -> Iterator[str]:
+    template_dir = os.path.join(HERE, "{{cookiecutter.app_name}}")
+    for root, _, template_files in os.walk(template_dir):
+        for template_file in template_files:
+            yield os.path.join(root, template_file)
+
+
+@task
+def no_placeholders(ctx):
+    """Check that default project name hasn't been committed to template dir"""
+    for template_file in _walk_template_files():
+        try:
+            with open(template_file, "r") as f:
+                if DEFAULT_APP_NAME in f.read():
+                    raise ValueError(
+                        f"Template cannot contain default app name, but {DEFAULT_APP_NAME} found in {f.name}"
+                    )
+        except UnicodeDecodeError:
+            pass
 
 
 @task(pre=[clean, build])
-def test(ctx):
-    """Run lint commands and tests."""
-    ctx.run('pip install -r {0} --ignore-installed'.format(REQUIREMENTS),
-            echo=True)
+def test_image_build(ctx):
+    """Run tests."""
     os.chdir(COOKIE)
-    _run_flask_command(ctx, 'lint')
-    _run_flask_command(ctx, 'test')
-
-@task
-def readme(ctx, browse=False):
-    ctx.run("rst2html.py README.rst > README.html")
-    if browse:
-        webbrowser.open_new_tab('README.html')
-
+    os.environ["DOCKER_BUILDKIT"] = "1"
+    ctx.run("docker-compose build flask-dev", echo=True)

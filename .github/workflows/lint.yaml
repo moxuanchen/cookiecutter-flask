@@ -1,0 +1,37 @@
+name: Build Status
+
+on:
+  - push
+  - pull_request
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version:
+          - 3.6
+          - 3.7
+          - 3.8
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v2.1.2
+        with:
+          node-version: "12.x"
+          registry-url: "https://registry.npmjs.org"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install cookiecutter==1.7.2 invoke==1.4.1
+      - name: Run test suite
+        run: invoke test
+      - name: Run lints
+        run: invoke lint
+      - name: Make sure placeholders not being committed
+        run: invoke no-placeholders
+      - name: Make sure Docker images can build
+        run: invoke test-image-build
